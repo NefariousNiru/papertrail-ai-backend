@@ -2,10 +2,11 @@
 from fastapi import UploadFile
 from core.streaming import make_demo_stream, ndjson_line
 from model.api import VerifyClaimResponse
-from model.claim import Verdict
+from model.claim import Verdict, Evidence
 from repository.claim_buffer_repository import ClaimBufferRepository
 from repository.job_repository import JobRepository
 from repository.verification_repository import VerificationRepository
+from util import functions
 
 
 class PaperService:
@@ -51,10 +52,7 @@ class PaperService:
                 merged = c.model_dump(exclude_none=True)
                 saved = await self._verifications.get(job_id, c.id)
                 if saved:
-                    merged["verdict"] = saved.verdict
-                    merged["confidence"] = saved.confidence
-                    merged["reasoningMd"] = saved.reasoningMd
-                    merged["sourceUploaded"] = True
+                    functions.stream_merge_saved(merged=merged, saved=saved)
                 yield ndjson_line({"type": "claim", "payload": merged})
                 yield ndjson_line(
                     {
@@ -84,11 +82,25 @@ class PaperService:
             2: Verdict.unsupported,
         }[abs(hash(claim_id)) % 3]
 
+        raw_excerpt = (
+            "This is a demo excerpt of the relevant passage supporting the claim. "
+            "In production, this would be a slice of the cited PDF around the matched passage."
+        )
+        evidence = [
+            Evidence(
+                paperTitle=file.filename or "Source PDF",
+                page=3,  # demo placeholder
+                section="Results",  # demo placeholder
+                paragraph=2,  # demo placeholder
+                excerpt=functions.clip_words(raw_excerpt, max_words=100),
+            )
+        ]
         result = VerifyClaimResponse(
             claimId=claim_id,
             verdict=verdict,
             confidence=0.82 if verdict == Verdict.supported else 0.55,
             reasoningMd="Automated check found relevant passages (demo).",
+            evidence=evidence,
         )
         # Persist the verification so refresh/replay shows it
         await self._verifications.set(job_id, result)

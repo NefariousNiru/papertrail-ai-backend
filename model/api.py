@@ -1,6 +1,6 @@
 # model/api.py
 from pydantic import BaseModel, Field
-from model.claim import Verdict
+from model.claim import Verdict, Evidence
 
 
 class ValidateKeyRequest(BaseModel):
@@ -25,3 +25,4 @@ class VerifyClaimResponse(BaseModel):
     verdict: Verdict
     confidence: float
     reasoningMd: str
+    evidence: list[Evidence] | None = None

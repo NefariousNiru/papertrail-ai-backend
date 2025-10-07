@@ -5,6 +5,7 @@ from repository.job_repository import JobRepository
 import json
 from typing import AsyncIterator, Dict, Final, Iterable
 from repository.verification_repository import VerificationRepository
+from util import functions
 
 LINE_SEP: Final[str] = "\n"
 
@@ -19,7 +20,6 @@ async def _merge_verification(
     claim_dict: Dict[str, object],
 ) -> Dict[str, object]:
     """
-    Flow:
     - If we already have a verification stored for this claim, overlay it so
       refresh/replay emits the verified fields.
     """
@@ -31,11 +31,7 @@ async def _merge_verification(
         return claim_dict
 
     # Overlay backend-generated fields
-    claim_dict["verdict"] = saved.verdict
-    claim_dict["confidence"] = saved.confidence
-    claim_dict["reasoningMd"] = saved.reasoningMd
-    claim_dict["sourceUploaded"] = True
-    # TODO (evidence can be added later when the service returns it)
+    functions.stream_merge_saved(merged=claim_dict, saved=saved)
     return claim_dict
 
 

@@ -1,6 +1,6 @@
 # model/claim.py
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class ClaimStatus(str, Enum):
@@ -23,6 +23,23 @@ class Suggestion(BaseModel):
     year: int | None = None
 
 
+class Evidence(BaseModel):
+    paperTitle: str | None = None
+    page: int | None = None
+    section: str | None = None
+    paragraph: int | None = None
+    excerpt: str | None = None
+
+    # Safety net: enforce 100-word cap even if service forgets to trim
+    @classmethod
+    @field_validator("excerpt")
+    def _cap_excerpt(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        words = v.split()
+        return v if len(words) <= 100 else " ".join(words[:100]) + " …"
+
+
 class Claim(BaseModel):
     id: str
     text: str
@@ -32,3 +49,4 @@ class Claim(BaseModel):
     reasoningMd: str | None = None
     suggestions: list[Suggestion] | None = None
     sourceUploaded: bool = False
+    evidence: list[Evidence] | None = None
