@@ -1,4 +1,4 @@
-# util/deps.py
+# controller/controller_dependencies.py
 from repository.claim_buffer_repository import ClaimBufferRepository
 from repository.verification_repository import VerificationRepository
 from service.paper_service import PaperService

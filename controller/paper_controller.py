@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 from service.paper_service import PaperService
 from model.api import UploadPaperResponse, StreamClaimsRequest, VerifyClaimResponse
 from util.constants import InternalURIs
-from util.deps import get_paper_service
+from controller.controller_dependencies import get_paper_service
 
 paper_router = APIRouter()
 
