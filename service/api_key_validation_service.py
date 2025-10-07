@@ -32,7 +32,6 @@ class ApiKeyValidationService:
                 },
                 json=payload,
             )
-        print(res.json())
         if res.status_code // 100 == 2:
             return
 

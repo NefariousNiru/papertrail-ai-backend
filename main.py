@@ -1,12 +1,21 @@
 # main.py
-import asyncio
+from fastapi_limiter import FastAPILimiter
 import routes
 from contextlib import asynccontextmanager
 from util.enums import Environment, Color
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from starlette.middleware.cors import CORSMiddleware
 from config.settings import settings
 from config.cache import close_redis, get_redis
+from fastapi.responses import JSONResponse
+
+
+async def _real_ip(request: Request) -> str:
+    if settings.TRUST_PROXY:
+        fwd = request.headers.get("x-forwarded-for")
+        if fwd:
+            return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 @asynccontextmanager
@@ -14,7 +23,8 @@ async def lifespan(fastApi: FastAPI):
     try:
         # Warm Redis
         print(f"{Color.GREEN}Initializing...{Color.RESET}")
-        await get_redis()
+        redis = await get_redis()
+        await FastAPILimiter.init(redis, identifier=_real_ip)
         print(f"{Color.BLUE}Server Started{Color.RESET}")
     except Exception as e:
         print("Failed to connect to Redis:", e)
@@ -45,6 +55,19 @@ app.add_middleware(
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
+
+
+@app.exception_handler(429)
+async def ratelimit_handler(request: Request, exc):
+    return JSONResponse(
+        status_code=429,
+        content={
+            "ok": False,
+            "error": "rate_limited",
+            "message": "Too many requests. Try again in 60s.",
+        },
+        headers={"Retry-After": "60"},
+    )
 
 
 routes.register_routes(app)

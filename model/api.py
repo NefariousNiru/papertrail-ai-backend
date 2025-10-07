@@ -30,6 +30,8 @@ class VerifyClaimResponse(BaseModel):
 
 
 ProgressPhase = Literal["parse", "extract", "index", "verify"]
+
+
 class ProgressPayload(BaseModel):
     phase: ProgressPhase
     processed: int

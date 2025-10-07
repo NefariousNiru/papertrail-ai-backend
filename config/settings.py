@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     PERSISTENCE_TTL_SECONDS: str = Field(
         ..., validation_alias="PERSISTENCE_TTL_SECONDS"
     )
+    RATE_LIMIT_TIMES: str = Field(..., validation_alias="RATE_LIMIT_TIMES")
+    RATE_LIMIT_SECONDS: int = Field(..., validation_alias="RATE_LIMIT_SECONDS")
+    MAX_FILE_MB: int = Field(..., validation_alias="MAX_FILE_MB")
+    TRUST_PROXY: bool = Field(..., validation_alias="TRUST_PROXY")
 
 
 try:
