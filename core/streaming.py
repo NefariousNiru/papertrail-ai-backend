@@ -1,7 +1,9 @@
 # core/streaming.py
+from model.claim import Claim
+from repository.claim_buffer_repository import ClaimBufferRepository
 from repository.job_repository import JobRepository
 import json
-from typing import AsyncIterator, Dict, Final
+from typing import AsyncIterator, Dict, Final, Iterable
 
 LINE_SEP: Final[str] = "\n"
 
@@ -10,8 +12,15 @@ def ndjson_line(obj: Dict[str, object]) -> bytes:
     return (json.dumps(obj, separators=(",", ":")) + LINE_SEP).encode("utf-8")
 
 
-async def make_demo_stream(job_id: str, jobs: JobRepository) -> AsyncIterator[bytes]:
+async def make_demo_stream(
+    job_id: str,
+    jobs: JobRepository,
+    buffer: ClaimBufferRepository,
+    skip_ids: Iterable[str] | None = None,
+) -> AsyncIterator[bytes]:
     from asyncio import sleep
+
+    skip: set[str] = set(skip_ids or [])
 
     demo_claims = [
         {
@@ -46,12 +55,23 @@ async def make_demo_stream(job_id: str, jobs: JobRepository) -> AsyncIterator[by
     ]
 
     total = len(demo_claims)
-    for i, claim in enumerate(demo_claims, start=1):
-        # keep the job alive while the user is connected
+    processed = 0
+
+    for claim_dict in demo_claims:
+        # Keep the job alive while the user is connected
         await jobs.touch(job_id)
-        yield ndjson_line({"type": "claim", "payload": claim})
+
+        if claim_dict["id"] in skip:
+            processed += 1
+            continue  # this one was already replayed; don't re-send
+
+        # Persist to buffer first so reconnects can replay
+        await buffer.append(job_id, Claim(**claim_dict))
+
+        processed += 1
+        yield ndjson_line({"type": "claim", "payload": claim_dict})
         yield ndjson_line(
-            {"type": "progress", "payload": {"processed": i, "total": total}}
+            {"type": "progress", "payload": {"processed": processed, "total": total}}
         )
         await sleep(0.35)
 
