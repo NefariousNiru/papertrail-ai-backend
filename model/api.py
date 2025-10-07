@@ -1,6 +1,7 @@
 # model/api.py
 from pydantic import BaseModel, Field
 from model.claim import Verdict, Evidence
+from typing import Literal
 
 
 class ValidateKeyRequest(BaseModel):
@@ -26,3 +27,16 @@ class VerifyClaimResponse(BaseModel):
     confidence: float
     reasoningMd: str
     evidence: list[Evidence] | None = None
+
+
+ProgressPhase = Literal["parse", "extract", "index", "verify"]
+class ProgressPayload(BaseModel):
+    phase: ProgressPhase
+    processed: int
+    total: int
+    ts: int
+
+
+class StreamEvent(BaseModel):
+    type: Literal["claim", "progress", "error", "done"]
+    payload: dict

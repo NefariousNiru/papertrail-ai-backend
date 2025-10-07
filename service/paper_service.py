@@ -1,7 +1,7 @@
 # service/paper_service.py
 from fastapi import UploadFile
 from core.streaming import make_demo_stream, ndjson_line
-from model.api import VerifyClaimResponse
+from model.api import VerifyClaimResponse, StreamEvent, ProgressPayload
 from model.claim import Verdict, Evidence
 from repository.claim_buffer_repository import ClaimBufferRepository
 from repository.job_repository import JobRepository
@@ -31,7 +31,6 @@ class PaperService:
 
     async def create_job_for_file(self, file: UploadFile) -> str:
         job = await self._jobs.create(initial_status="streaming")
-        # Defensive: clear any prior buffers for this new job id
         await self._buffer.clear(job.id)
         return job.id
 
@@ -39,10 +38,21 @@ class PaperService:
         job = await self._jobs.get(job_id)
         if job is None:
             yield ndjson_line(
-                {"type": "error", "payload": {"message": "Unknown or expired jobId"}}
+                StreamEvent(
+                    type="error", payload={"message": "Unknown or expired jobId"}
+                ).model_dump()
             )
-            yield ndjson_line({"type": "done"})
+            yield ndjson_line(StreamEvent(type="done", payload={}).model_dump())
             return
+
+        # 0) Emit latest page-based snapshot FIRST (replay-friendly)
+        snap = await self._jobs.get_progress_snapshot(job_id)
+        if snap and snap.get("total", 0) > 0:
+            payload = ProgressPayload.model_validate(snap)
+            evt = StreamEvent(
+                type="progress", payload=payload.model_dump()
+            ).model_dump()
+            yield ndjson_line(evt)
 
         # 1) Replay buffered claims (overlay verification if exists)
         buffered = await self._buffer.all(job_id)
@@ -53,12 +63,14 @@ class PaperService:
                 saved = await self._verifications.get(job_id, c.id)
                 if saved:
                     functions.stream_merge_saved(merged=merged, saved=saved)
-                yield ndjson_line({"type": "claim", "payload": merged})
                 yield ndjson_line(
-                    {
-                        "type": "progress",
-                        "payload": {"processed": idx, "total": max(idx, len(buffered))},
-                    }
+                    StreamEvent(type="claim", payload=merged).model_dump()
+                )
+                yield ndjson_line(
+                    StreamEvent(
+                        type="progress",
+                        payload={"processed": idx, "total": max(idx, len(buffered))},
+                    ).model_dump()
                 )
 
         # 2) Continue live stream, skipping replayed ids; overlay verification as well
