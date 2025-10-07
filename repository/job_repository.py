@@ -31,7 +31,7 @@ class JobRepository:
 
     async def put(self, job: Job) -> None:
         payload = job.model_dump_json(
-            by_alias=False, exclude_none=True, separators=(",", ":")
+            by_alias=False, exclude_none=True
         )
         r = await self._client()
         await r.set(self._key(job.id), payload.encode("utf-8"), ex=self._ttl)

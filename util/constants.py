@@ -3,8 +3,8 @@ class InternalURIs:
     V1 = API + "/v1"
     VALIDATE_API_KEY = V1 + "/validate-api-key"
     UPLOAD_PAPER = V1 + "/upload-paper"
-    STREAM_CLAIMS = V1 + "/stream-claims"
-    VERIFY_CLAIMS = V1 + "/verify-claims"
+    STREAM_CLAIM = V1 + "/stream-claim"
+    VERIFY_CLAIM = V1 + "/verify-claim"
 
 
 class ExternalURIs:

@@ -3,13 +3,14 @@ from fastapi import APIRouter, File, Form, UploadFile, status, Depends
 from fastapi.responses import StreamingResponse
 from service.paper_service import PaperService
 from model.api import UploadPaperResponse, StreamClaimsRequest, VerifyClaimResponse
+from util.constants import InternalURIs
 from util.deps import get_paper_service
 
 paper_router = APIRouter()
 
 
 @paper_router.post(
-    "/upload-paper",
+    InternalURIs.UPLOAD_PAPER,
     response_model=UploadPaperResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -22,7 +23,7 @@ async def upload_paper(
     return UploadPaperResponse(jobId=job_id)
 
 
-@paper_router.post("/stream-claims")
+@paper_router.post(InternalURIs.STREAM_CLAIM)
 async def stream_claims(
     payload: StreamClaimsRequest,
     service: PaperService = Depends(get_paper_service),
@@ -31,7 +32,7 @@ async def stream_claims(
     return StreamingResponse(generator, media_type="application/x-ndjson")
 
 
-@paper_router.post("/verify-claim", response_model=VerifyClaimResponse)
+@paper_router.post(InternalURIs.VERIFY_CLAIM, response_model=VerifyClaimResponse)
 async def verify_claim(
     claimId: str = Form(...),
     file: UploadFile = File(...),
