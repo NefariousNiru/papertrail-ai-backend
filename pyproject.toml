@@ -14,6 +14,9 @@ pydantic = "^2.11.10"
 python-multipart = "^0.0.20"
 pydantic-settings = "^2.11.0"
 black = "^25.9.0"
+python-dotenv = "^1.1.1"
+redis = "^6.4.0"
+fastapi-limiter = "^0.1.6"
 
 
 [build-system]
