@@ -34,9 +34,10 @@ async def stream_claims(
 
 @paper_router.post(InternalURIs.VERIFY_CLAIM, response_model=VerifyClaimResponse)
 async def verify_claim(
+    jobId: str = Form(...),
     claimId: str = Form(...),
     file: UploadFile = File(...),
     apiKey: str = Form(...),
     service: PaperService = Depends(get_paper_service),
 ):
-    return await service.verify_claim(claim_id=claimId, file=file)
+    return await service.verify_claim(claim_id=claimId, file=file, job_id=jobId)

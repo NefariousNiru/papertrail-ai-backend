@@ -4,6 +4,7 @@ from repository.claim_buffer_repository import ClaimBufferRepository
 from repository.job_repository import JobRepository
 import json
 from typing import AsyncIterator, Dict, Final, Iterable
+from repository.verification_repository import VerificationRepository
 
 LINE_SEP: Final[str] = "\n"
 
@@ -12,10 +13,37 @@ def ndjson_line(obj: Dict[str, object]) -> bytes:
     return (json.dumps(obj, separators=(",", ":")) + LINE_SEP).encode("utf-8")
 
 
+async def _merge_verification(
+    verifications: VerificationRepository,
+    job_id: str,
+    claim_dict: Dict[str, object],
+) -> Dict[str, object]:
+    """
+    Flow:
+    - If we already have a verification stored for this claim, overlay it so
+      refresh/replay emits the verified fields.
+    """
+    claim_id = str(claim_dict.get("id") or "")
+    if not claim_id:
+        return claim_dict
+    saved = await verifications.get(job_id, claim_id)
+    if not saved:
+        return claim_dict
+
+    # Overlay backend-generated fields
+    claim_dict["verdict"] = saved.verdict
+    claim_dict["confidence"] = saved.confidence
+    claim_dict["reasoningMd"] = saved.reasoningMd
+    claim_dict["sourceUploaded"] = True
+    # TODO (evidence can be added later when the service returns it)
+    return claim_dict
+
+
 async def make_demo_stream(
     job_id: str,
     jobs: JobRepository,
     buffer: ClaimBufferRepository,
+    verifications: VerificationRepository,
     skip_ids: Iterable[str] | None = None,
 ) -> AsyncIterator[bytes]:
     from asyncio import sleep
@@ -58,18 +86,20 @@ async def make_demo_stream(
     processed = 0
 
     for claim_dict in demo_claims:
-        # Keep the job alive while the user is connected
         await jobs.touch(job_id)
 
         if claim_dict["id"] in skip:
             processed += 1
-            continue  # this one was already replayed; don't re-send
+            continue
 
-        # Persist to buffer first so reconnects can replay
+        # Save original claim in buffer so reconnects can replay
         await buffer.append(job_id, Claim(**claim_dict))
 
+        # Before emitting, overlay any existing verification result
+        merged = await _merge_verification(verifications, job_id, dict(claim_dict))
+
         processed += 1
-        yield ndjson_line({"type": "claim", "payload": claim_dict})
+        yield ndjson_line({"type": "claim", "payload": merged})
         yield ndjson_line(
             {"type": "progress", "payload": {"processed": processed, "total": total}}
         )

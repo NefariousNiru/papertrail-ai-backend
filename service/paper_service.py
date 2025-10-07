@@ -5,23 +5,32 @@ from model.api import VerifyClaimResponse
 from model.claim import Verdict
 from repository.claim_buffer_repository import ClaimBufferRepository
 from repository.job_repository import JobRepository
+from repository.verification_repository import VerificationRepository
 
 
 class PaperService:
     """
     Flow:
-    - On upload: create a job id (ephemeral).
-    - On stream: first replay any buffered claims (from Redis), then continue live.
-    - On verify: return demo verdict (placeholder for real verification).
+    - On upload: create job id; clear stale buffers.
+    - On stream: replay buffered claims (overlaying verification if present),
+      then continue live stream (also overlaying).
+    - On verify: compute result (demo), persist to Redis (2h TTL), return to client.
+    - "Skip" is a UI-only concept and is NOT persisted here.
     """
 
-    def __init__(self, jobs: JobRepository, buffer: ClaimBufferRepository) -> None:
+    def __init__(
+        self,
+        jobs: JobRepository,
+        buffer: ClaimBufferRepository,
+        verifications: VerificationRepository,
+    ) -> None:
         self._jobs = jobs
         self._buffer = buffer
+        self._verifications = verifications
 
     async def create_job_for_file(self, file: UploadFile) -> str:
         job = await self._jobs.create(initial_status="streaming")
-        # New job; ensure no stale buffer exists (defensive)
+        # Defensive: clear any prior buffers for this new job id
         await self._buffer.clear(job.id)
         return job.id
 
@@ -34,39 +43,53 @@ class PaperService:
             yield ndjson_line({"type": "done"})
             return
 
-        # 1) Replay buffered claims (if any)
+        # 1) Replay buffered claims (overlay verification if exists)
         buffered = await self._buffer.all(job_id)
         if buffered:
             for idx, c in enumerate(buffered, start=1):
-                # Keep buffer hot while active
                 await self._buffer.touch(job_id)
+                merged = c.model_dump(exclude_none=True)
+                saved = await self._verifications.get(job_id, c.id)
+                if saved:
+                    merged["verdict"] = saved.verdict
+                    merged["confidence"] = saved.confidence
+                    merged["reasoningMd"] = saved.reasoningMd
+                    merged["sourceUploaded"] = True
+                yield ndjson_line({"type": "claim", "payload": merged})
                 yield ndjson_line(
-                    {"type": "claim", "payload": c.model_dump(exclude_none=True)}
-                )
-                # Optional: send a conservative progress (idx/idx) so UI shows immediate activity
-                yield ndjson_line(
-                    {"type": "progress", "payload": {"processed": idx, "total": idx}}
+                    {
+                        "type": "progress",
+                        "payload": {"processed": idx, "total": max(idx, len(buffered))},
+                    }
                 )
 
-        # 2) Continue live stream, skipping already replayed ids
+        # 2) Continue live stream, skipping replayed ids; overlay verification as well
         skip_ids = {c.id for c in buffered} if buffered else set()
         async for chunk in make_demo_stream(
-            job_id=job_id, jobs=self._jobs, buffer=self._buffer, skip_ids=skip_ids
+            job_id=job_id,
+            jobs=self._jobs,
+            buffer=self._buffer,
+            verifications=self._verifications,
+            skip_ids=skip_ids,
         ):
             yield chunk
 
     async def verify_claim(
-        self, claim_id: str, file: UploadFile
+        self, job_id: str, claim_id: str, file: UploadFile
     ) -> VerifyClaimResponse:
+        # DEMO verdict; replace with real verification later
         verdict = {
             0: Verdict.supported,
             1: Verdict.partially_supported,
             2: Verdict.unsupported,
         }[abs(hash(claim_id)) % 3]
 
-        return VerifyClaimResponse(
+        result = VerifyClaimResponse(
             claimId=claim_id,
             verdict=verdict,
             confidence=0.82 if verdict == Verdict.supported else 0.55,
             reasoningMd="Automated check found relevant passages (demo).",
         )
+        # Persist the verification so refresh/replay shows it
+        await self._verifications.set(job_id, result)
+        return result
