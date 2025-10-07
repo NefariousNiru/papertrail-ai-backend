@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "paper-trail-ai-backend"
+version = "0.1.0"
+description = "PaperTrail AI backend"
+authors = ["NefariousNiru <nirupomboseroy99@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.118.0"
+httpx = "^0.28.1"
+uvicorn = "^0.37.0"
+pydantic = "^2.11.10"
+python-multipart = "^0.0.20"
+pydantic-settings = "^2.11.0"
+black = "^25.9.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
