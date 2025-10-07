@@ -12,11 +12,15 @@ if os.getenv("APP_ENV", Environment.DEV) == Environment.DEV:
 
 
 class Settings(BaseSettings):
+    APP_ENV: str = Field(..., validation_alias="APP_ENV")
     ALLOWED_ORIGIN: str = Field(..., validation_alias="ALLOWED_ORIGIN")
     ANTHROPIC_API_URL: str = Field(..., validation_alias="ANTHROPIC_API_URL")
     ANTHROPIC_MODEL: str = Field(..., validation_alias="ANTHROPIC_MODEL")
     REDIS_URL: str = Field(..., validation_alias="REDIS_URL")
-    PERSISTENCE_TTL_SECONDS: str = Field(..., validation_alias="PERSISTENCE_TTL_SECONDS")
+    PERSISTENCE_TTL_SECONDS: str = Field(
+        ..., validation_alias="PERSISTENCE_TTL_SECONDS"
+    )
+
 
 try:
     settings = Settings()

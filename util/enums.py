@@ -1,5 +1,7 @@
 # util/enums.py
 from enum import Enum
+from typing import NamedTuple
+from fastapi import status
 
 
 class Color(str, Enum):
@@ -19,3 +21,13 @@ class Color(str, Enum):
 class Environment(str, Enum):
     DEV = "dev"
     PROD = "prod"
+
+
+class ErrorInfo(NamedTuple):
+    message: str
+    http_status: int
+
+
+class ErrorMessage(Enum):
+    INVALID_API_KEY = ErrorInfo("Invalid API Key", status.HTTP_401_UNAUTHORIZED)
+    INTERNAL_ERROR = ErrorInfo("Internal Error", status.HTTP_502_BAD_GATEWAY)

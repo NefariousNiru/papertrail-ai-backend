@@ -11,12 +11,11 @@ from config.cache import close_redis, get_redis
 
 @asynccontextmanager
 async def lifespan(fastApi: FastAPI):
-    print(f"{Color.GREEN}Server Started{Color.RESET}")
-    print(f"{Color.GREEN}Initializing...{Color.RESET}")
-
     try:
         # Warm Redis
+        print(f"{Color.GREEN}Initializing...{Color.RESET}")
         await get_redis()
+        print(f"{Color.BLUE}Server Started{Color.RESET}")
     except Exception as e:
         print("Failed to connect to Redis:", e)
         raise
@@ -36,7 +35,7 @@ app: FastAPI = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.allowed_origin],
+    allow_origins=[settings.ALLOWED_ORIGIN],
     allow_credentials=True,  # Allow cookies and other credentials
     allow_methods=["GET", "POST"],  # Allowed HTTP Methods
     allow_headers=["Authorization", "Content-Type", "Accept"],  # Allowed HTTP Headers
@@ -53,5 +52,5 @@ routes.register_routes(app)
 if __name__ == "__main__":
     import uvicorn
 
-    reload = settings.app_env == Environment.DEV
+    reload = settings.APP_ENV == Environment.DEV
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=reload)
