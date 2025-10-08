@@ -1,4 +1,5 @@
 # service/paper_service.py
+import logging
 from fastapi import UploadFile
 from config.settings import settings
 from core.pdf_text import extract_pages_texts
@@ -11,6 +12,8 @@ from repository.claim_buffer_repository import ClaimBufferRepository
 from repository.job_repository import JobRepository
 from repository.verification_repository import VerificationRepository
 from util import functions
+
+logger = logging.getLogger(__name__)
 
 
 class PaperService:
@@ -27,11 +30,24 @@ class PaperService:
         self._blobs = blobs
 
     async def create_job_for_file(self, file: UploadFile) -> str:
+        """
+        Create job, clear stale buffers, persist PDF bytes.
+        Logs: created job id and byte size (no payloads).
+        """
         job = await self._jobs.create(initial_status="streaming")
         await self._buffer.clear(job.id)
-        data = await file.read()
-        await file.seek(0)
-        await self._blobs.put_pdf(job.id, data)
+        try:
+            data = await file.read()
+            await file.seek(0)
+        except Exception:
+            logger.error("upload.read.error")
+            raise
+        try:
+            await self._blobs.put_pdf(job.id, data)
+        except Exception:
+            logger.error("upload.persist.error")
+            raise
+        logger.info("upload.ok job=%s bytes=%d", job.id, len(data))
         return job.id
 
     async def stream_claims(self, job_id: str, api_key: str):
@@ -43,7 +59,13 @@ class PaperService:
               * replay any buffered claims (overlay verification)
               * continue live extraction, skipping buffered ids
         """
-        job = await self._jobs.get(job_id)
+        try:
+            job = await self._jobs.get(job_id)
+        except Exception:
+            logger.error("stream.job.get.error job=%s", job_id)
+            # fall through to error payload
+            job = None
+
         if job is None:
             yield ndjson_line(
                 StreamEvent(
@@ -54,80 +76,145 @@ class PaperService:
             return
 
         # Read current status & latest snapshot (parse or extract)
-        status = await self._jobs.get_status(job_id) or job.status
-        snap = await self._jobs.get_progress_snapshot(job_id)
+        try:
+            status = await self._jobs.get_status(job_id) or job.status
+            snap = await self._jobs.get_progress_snapshot(job_id)
+        except Exception:
+            logger.error("stream.snapshot.error job=%s", job_id)
+            status = job.status
+            snap = None
 
         # Emit the latest snapshot (if any) so UI shows correct phase/progress immediately
         if snap and snap.get("total", 0) > 0:
-            payload = ProgressPayload.model_validate(snap)
-            yield ndjson_line(
-                StreamEvent(type="progress", payload=payload.model_dump()).model_dump()
-            )
+            try:
+                payload = ProgressPayload.model_validate(snap)
+                yield ndjson_line(
+                    StreamEvent(
+                        type="progress", payload=payload.model_dump()
+                    ).model_dump()
+                )
+            except Exception:
+                logger.error("stream.snapshot.emit.error job=%s", job_id)
 
         # Pull any buffered claims
-        buffered = await self._buffer.all(job_id)
+        try:
+            buffered = await self._buffer.all(job_id)
+        except Exception:
+            logger.error("stream.buffer.read.error job=%s", job_id)
+            buffered = []
+
         if buffered:
+            logger.info("stream.replay job=%s count=%d", job_id, len(buffered))
             # Replay buffered claims with verification overlay
             for c in buffered:
-                await self._buffer.touch(job_id)
-                merged = c.model_dump(exclude_none=True)
-                saved = await self._verifications.get(job_id, c.id)
-                if saved:
-                    functions.stream_merge_saved(merged=merged, saved=saved)
-                yield ndjson_line(
-                    StreamEvent(type="claim", payload=merged).model_dump()
-                )
+                try:
+                    await self._buffer.touch(job_id)
+                    merged = c.model_dump(exclude_none=True)
+                    saved = await self._verifications.get(job_id, c.id)
+                    if saved:
+                        functions.stream_merge_saved(merged=merged, saved=saved)
+                    yield ndjson_line(
+                        StreamEvent(type="claim", payload=merged).model_dump()
+                    )
+                except Exception:
+                    logger.error("stream.replay.error job=%s", job_id)
 
         # If job has already finished, never re-run extraction.
         if (status or "").lower() == "finished":
+            logger.info("stream.finish.shortcircuit job=%s", job_id)
             yield ndjson_line(StreamEvent(type="done", payload={}).model_dump())
             return
 
         # Otherwise, continue live extraction FROM HERE.
-        pdf = await self._blobs.get_pdf(job_id)
+        try:
+            pdf = await self._blobs.get_pdf(job_id)
+        except Exception:
+            logger.error("stream.pdf.fetch.error job=%s", job_id)
+            pdf = None
+
         if not pdf:
+            logger.warning("stream.pdf.missing job=%s", job_id)
             yield ndjson_line(StreamEvent(type="done", payload={}).model_dump())
             return
 
-        pages = extract_pages_texts(pdf)
+        try:
+            pages = extract_pages_texts(pdf)
+        except Exception:
+            logger.error("stream.pdf.parse.error job=%s", job_id)
+            pages = []
+
         if not pages:
+            logger.warning("stream.pages.empty job=%s", job_id)
             yield ndjson_line(StreamEvent(type="done", payload={}).model_dump())
             return
 
         # Skip ids we already replayed; suppress parse phase if snapshot says we're already extracting
         skip_ids = {c.id for c in buffered} if buffered else set()
         emit_parse = not (snap and snap.get("phase") == "extract")
+        logger.info(
+            "stream.live.start job=%s pages=%d skip=%d emit_parse=%s",
+            job_id,
+            len(pages),
+            len(skip_ids),
+            emit_parse,
+        )
 
-        async for chunk in make_live_stream(
-            job_id=job_id,
-            api_key=api_key,
-            jobs=self._jobs,
-            buffer=self._buffer,
-            verifications=self._verifications,
-            pages=pages,
-            extract_model=settings.ANTHROPIC_MODEL,
-            extract_api_url=settings.ANTHROPIC_API_URL,
-            extract_concurrency=settings.EXTRACT_CONCURRENCY,
-            skip_ids=skip_ids,
-            emit_parse=emit_parse,
-        ):
-            yield chunk
+        try:
+            async for chunk in make_live_stream(
+                job_id=job_id,
+                api_key=api_key,
+                jobs=self._jobs,
+                buffer=self._buffer,
+                verifications=self._verifications,
+                pages=pages,
+                extract_model=settings.ANTHROPIC_MODEL,
+                extract_api_url=settings.ANTHROPIC_API_URL,
+                extract_concurrency=settings.EXTRACT_CONCURRENCY,
+                skip_ids=skip_ids,
+                emit_parse=emit_parse,
+            ):
+                yield chunk
+        except Exception:
+            logger.error("stream.live.error job=%s", job_id)
+            # Try to gracefully end the stream
+            yield ndjson_line(StreamEvent(type="done", payload={}).model_dump())
 
     async def verify_claim(
         self, job_id: str, claim_id: str, file: UploadFile, api_key: str
     ) -> VerifyClaimResponse:
-        buffered = await self._buffer.all(job_id)
+        """
+        Verify a buffered claim against an uploaded source PDF and persist result.
+        Logs: sizes and verdict only (no payloads).
+        """
+        try:
+            buffered = await self._buffer.all(job_id)
+        except Exception:
+            logger.error("verify.buffer.read.error job=%s", job_id)
+            buffered = []
+
         claim_text = next((c.text for c in buffered if c.id == claim_id), claim_id)
 
-        source_bytes = await file.read()
-        await file.seek(0)
+        try:
+            source_bytes = await file.read()
+            await file.seek(0)
+        except Exception:
+            logger.error("verify.file.read.error job=%s", job_id)
+            raise
 
-        v, evidence_items = await verify_claim_against_pdf(
-            claim_text=claim_text,
-            source_pdf_bytes=source_bytes,
-            api_key=api_key,
-            k=4,
+        logger.info(
+            "verify.start job=%s claim=%s bytes=%d", job_id, claim_id, len(source_bytes)
         )
+
+        try:
+            v, evidence_items = await verify_claim_against_pdf(
+                claim_text=claim_text,
+                source_pdf_bytes=source_bytes,
+                api_key=api_key,
+                k=4,
+            )
+        except Exception:
+            logger.error("verify.pipeline.error job=%s", job_id)
+            raise
 
         verdict_map = {
             "supported": Verdict.supported,
@@ -152,5 +239,18 @@ class PaperService:
                 for e in evidence_items
             ],
         )
-        await self._verifications.set(job_id, result)
+
+        try:
+            await self._verifications.set(job_id, result)
+        except Exception:
+            logger.error("verify.persist.error job=%s claim=%s", job_id, claim_id)
+            raise
+
+        logger.info(
+            "verify.ok job=%s claim=%s verdict=%s conf=%.2f",
+            job_id,
+            claim_id,
+            verdict.value,
+            v.confidence,
+        )
         return result
