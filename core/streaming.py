@@ -1,147 +1,153 @@
 # core/streaming.py
 import time
-
-from model.api import ProgressPayload, StreamEvent, ProgressPhase
+from typing import AsyncIterator, Dict, Final, Iterable, List, Tuple
+from core.anthropic_client import extract_claims_from_page
 from model.claim import Claim
 from repository.claim_buffer_repository import ClaimBufferRepository
 from repository.job_repository import JobRepository
-import json
-from typing import AsyncIterator, Dict, Final, Iterable
 from repository.verification_repository import VerificationRepository
 from util import functions
+import json
+import logging
+from util.timing import timed
 
 LINE_SEP: Final[str] = "\n"
+logger = logging.getLogger(__name__)
 
 
 def ndjson_line(obj: Dict[str, object]) -> bytes:
     return (json.dumps(obj, separators=(",", ":")) + LINE_SEP).encode("utf-8")
 
 
-def make_progress_event(
-    *,
-    phase: ProgressPhase,
-    processed: int,
-    total: int,
-    ts: int | None = None,
-) -> Dict[str, object]:
-    """Builds and validates a progress StreamEvent, returns a plain dict ready for NDJSON."""
-    payload = ProgressPayload(
-        phase=phase, processed=processed, total=total, ts=int(ts or time.time())
-    )
-    event = StreamEvent(type="progress", payload=payload.model_dump())
-    return event.model_dump()
-
-
 async def _merge_verification(
-    verifications: VerificationRepository,
-    job_id: str,
-    claim_dict: Dict[str, object],
+    verifications: VerificationRepository, job_id: str, claim_dict: Dict[str, object]
 ) -> Dict[str, object]:
-    """Overlay saved verification so refresh/replay emits verified fields."""
-    claim_id = str(claim_dict.get("id") or "")
-    if not claim_id:
+    cid = str(claim_dict.get("id") or "")
+    if not cid:
         return claim_dict
-    saved = await verifications.get(job_id, claim_id)
-    if not saved:
-        return claim_dict
-
-    # Overlay backend-generated fields
-    functions.stream_merge_saved(merged=claim_dict, saved=saved)
+    saved = await verifications.get(job_id, cid)
+    if saved:
+        functions.stream_merge_saved(merged=claim_dict, saved=saved)
     return claim_dict
 
 
-async def _emit_parse_progress(
+async def _emit_phase_progress(
+    *, job_id: str, jobs: JobRepository, phase: str, processed: int, total: int
+) -> bytes:
+    await jobs.save_phase_progress(
+        job_id, phase=phase, processed=processed, total=total
+    )
+    return ndjson_line(
+        {
+            "type": "progress",
+            "payload": {
+                "phase": phase,
+                "processed": processed,
+                "total": total,
+                "ts": int(time.time()),
+            },
+        }
+    )
+
+
+async def make_live_stream(
     *,
     job_id: str,
-    jobs: JobRepository,
-    processed: int,
-    total: int,
-) -> bytes:
-    # Persist snapshot for replay, then emit NDJSON line
-    await jobs.save_parse_progress(job_id, processed=processed, total=total)
-    evt = make_progress_event(phase="parse", processed=processed, total=total)
-    return ndjson_line(evt)
-
-
-async def make_demo_stream(
-    job_id: str,
+    api_key: str,
     jobs: JobRepository,
     buffer: ClaimBufferRepository,
     verifications: VerificationRepository,
+    pages: List[Tuple[int, str]],
+    extract_model: str,
+    extract_api_url: str,
+    extract_concurrency: int,
     skip_ids: Iterable[str] | None = None,
+    emit_parse: bool = True,  # NEW: allows skipping parse replay on resume
 ) -> AsyncIterator[bytes]:
     """
-    Demo pipeline:
-      1) Page-aware parsing with determinate progress:
-         - Emits {"type":"progress","payload":{"phase":"parse","processed","total","ts"}}
-         - Persists snapshot via JobRepository.save_parse_progress so reconnect shows it first.
-      2) Stream demo claims (skipping any already buffered ids) with verification overlay and buffering for replay.
+    Drive concurrent, per-page claim extraction and emit NDJSON events:
+      - optional parse progress (if emit_parse=True)
+      - extract progress per finished page
+      - claim events as they arrive
+      - mark job finished at end
     """
-    from asyncio import sleep
+    from asyncio import Semaphore, create_task, as_completed
 
-    skip: set[str] = set(skip_ids or [])
-
-    # ---------- 1) Page-based parse progress (demo) ----------
-    total_pages = 12  # Replace with real doc.page_count in production
-    yield await _emit_parse_progress(
-        job_id=job_id, jobs=jobs, processed=0, total=total_pages
+    skip = set(skip_ids or [])
+    total_pages = len(pages)
+    logger.info(
+        "stream.start job=%s pages=%d conc=%d skip=%d",
+        job_id,
+        total_pages,
+        extract_concurrency,
+        len(skip),
     )
 
-    for p in range(1, total_pages + 1):
-        await sleep(0.05)  # simulate per-page parse latency
-        yield await _emit_parse_progress(
-            job_id=job_id, jobs=jobs, processed=p, total=total_pages
-        )
+    # Parse progress (0..N) only if requested
+    if emit_parse:
+        for i in range(total_pages + 1):
+            yield await _emit_phase_progress(
+                job_id=job_id, jobs=jobs, phase="parse", processed=i, total=total_pages
+            )
 
-    # ---------- 2) Claim streaming with overlay + buffering ----------
-    demo_claims = [
-        {
-            "id": "c1",
-            "text": "Transformers outperform RNNs on translation tasks.",
-            "status": "cited",
-            "verdict": None,
-            "confidence": None,
-            "suggestions": [],
-            "sourceUploaded": False,
-        },
-        {
-            "id": "c2",
-            "text": "Pretraining improves zero-shot performance in most language tasks.",
-            "status": "weakly_cited",
-            "verdict": None,
-        },
-        {
-            "id": "c3",
-            "text": "Graph neural networks strictly dominate CNNs for all vision tasks.",
-            "status": "uncited",
-            "verdict": None,
-            "suggestions": [
-                {
-                    "title": "CNN vs GNN survey",
-                    "url": "https://example.org/survey",
-                    "venue": "TPAMI",
-                    "year": 2020,
-                }
-            ],
-        },
-    ]
+    # Concurrent per-page extraction
+    sem = Semaphore(max(1, extract_concurrency))
+    tasks = []
 
-    for claim_dict in demo_claims:
-        await jobs.touch(job_id)
+    async def _one_page(pn: int, text: str):
+        async with sem:
+            with timed(logger, "stream.page.extract", page=pn):
+                claims = await extract_claims_from_page(
+                    api_key=api_key,
+                    model=extract_model,
+                    api_url=extract_api_url,
+                    page_number=pn,
+                    page_text=text,
+                )
+                out: List[Dict[str, object]] = []
+                for c in claims:
+                    out.append(
+                        {
+                            "id": c.get("id") or f"p{pn}_{len(out)+1}",
+                            "text": c.get("text"),
+                            "status": c.get("status") or "uncited",
+                            "verdict": None,
+                            "confidence": None,
+                            "suggestions": [],
+                            "sourceUploaded": False,
+                        }
+                    )
+                return pn, out
 
-        if claim_dict["id"] in skip:
-            continue
+    for pn, txt in pages:
+        tasks.append(create_task(_one_page(pn, txt)))
 
-        # Buffer original claim so reconnects can replay
-        await buffer.append(job_id, Claim(**claim_dict))
+    finished_pages = 0
+    with timed(logger, "stream.extract.all", pages=total_pages):
+        for fut in as_completed(tasks):
+            pn, claim_list = await fut
+            await jobs.touch(job_id)
 
-        # Overlay any existing verification result before emitting
-        merged = await _merge_verification(verifications, job_id, dict(claim_dict))
+            for cdict in claim_list:
+                if cdict["id"] in skip:
+                    continue
+                await buffer.append(job_id, Claim(**cdict))
+                merged = await _merge_verification(verifications, job_id, dict(cdict))
+                yield ndjson_line({"type": "claim", "payload": merged})
 
-        # Emit claim
-        claim_evt = StreamEvent(type="claim", payload=merged).model_dump()
-        yield ndjson_line(claim_evt)
-        await sleep(0.35)
+            finished_pages += 1
+            yield await _emit_phase_progress(
+                job_id=job_id,
+                jobs=jobs,
+                phase="extract",
+                processed=finished_pages,
+                total=total_pages,
+            )
 
-    done_evt = StreamEvent(type="done", payload={}).model_dump()
-    yield ndjson_line(done_evt)
+    # Final snapshot + status
+    await jobs.save_phase_progress(
+        job_id, phase="extract", processed=total_pages, total=total_pages
+    )
+    await jobs.set_status(job_id, "finished")
+    logger.info("stream.done job=%s", job_id)
+    yield ndjson_line({"type": "done"})

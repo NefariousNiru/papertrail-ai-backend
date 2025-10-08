@@ -5,15 +5,15 @@ from uuid import uuid4
 from redis.asyncio import Redis
 from config.cache import get_redis
 from config.settings import settings
+from model.api import ProgressPhase
 from model.job import Job, JobStatus
 from repository.namespaces import JOBS
 
 KEY_PREFIX: Final[str] = JOBS
-DEFAULT_TTL_SECONDS: Final[int] = settings.PERSISTENCE_TTL_SECONDS
 
 
 class JobRepository:
-    def __init__(self, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> None:
+    def __init__(self, ttl_seconds: int = settings.PERSISTENCE_TTL_SECONDS) -> None:
         self._ttl = int(ttl_seconds)
 
     @staticmethod
@@ -78,28 +78,48 @@ class JobRepository:
         r = await self._client()
         return int(await r.delete(self._key(job_id)))
 
-    # ---------------- Convenience updates ----------------
+    # ---------------- Status helpers ----------------
 
     async def set_status(self, job_id: str, status: JobStatus) -> None:
         r = await self._client()
         await r.hset(self._key(job_id), mapping={"status": status})
         await r.expire(self._key(job_id), self._ttl)
 
-    # ---------------- Page-based progress snapshot ----------------
+    async def get_status(self, job_id: str) -> Optional[JobStatus]:
+        r = await self._client()
+        v = await r.hget(self._key(job_id), "status")
+        if v is None:
+            return None
+        if isinstance(v, (bytes, bytearray)):
+            v = v.decode("utf-8")
+        return v or None
 
-    async def save_parse_progress(
-        self, job_id: str, processed: int, total: int
+    async def set_totals(self, job_id: str, *, processed: int, total: int) -> None:
+        r = await self._client()
+        await r.hset(
+            self._key(job_id),
+            mapping={"processed": str(processed), "total": str(total)},
+        )
+        await r.expire(self._key(job_id), self._ttl)
+
+    # ---------------- Phase-based progress snapshots (parse/extract) ----------------
+
+    async def save_phase_progress(
+        self, job_id: str, *, phase: ProgressPhase, processed: int, total: int
     ) -> None:
-        now_epoch = int(time.time())  # seconds since epoch
+        """
+        Persist snapshot for any phase; also mirror processed/total for quick inspection.
+        Newer snapshots overwrite older ones (we keep only the latest).
+        """
+        now = int(time.time())
         r = await self._client()
         await r.hset(
             self._key(job_id),
             mapping={
-                "phase": "parse",
+                "phase": phase,
                 "progress_processed": str(processed),
                 "progress_total": str(total),
-                "progress_ts": str(now_epoch),
-                # keep Job fields synced for quick inspection
+                "progress_ts": str(now),
                 "processed": str(processed),
                 "total": str(total),
             },
@@ -107,6 +127,9 @@ class JobRepository:
         await r.expire(self._key(job_id), self._ttl)
 
     async def get_progress_snapshot(self, job_id: str) -> dict | None:
+        """
+        Return the latest saved snapshot (parse OR extract), or None.
+        """
         r = await self._client()
         h = await r.hgetall(self._key(job_id))
         if not h:
@@ -118,14 +141,14 @@ class JobRepository:
                 return None
             return v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
 
-        if _s("phase") != "parse":
+        phase = _s("phase")
+        if not phase:
             return None
 
         try:
             processed = int((_s("progress_processed") or "0"))
             total = int((_s("progress_total") or "0"))
-            ts_raw = _s("progress_ts") or ""
-            ts = int(ts_raw) if ts_raw else int(time.time())
-            return {"phase": "parse", "processed": processed, "total": total, "ts": ts}
+            ts = int(_s("progress_ts") or str(int(time.time())))
+            return {"phase": phase, "processed": processed, "total": total, "ts": ts}
         except Exception:
             return None

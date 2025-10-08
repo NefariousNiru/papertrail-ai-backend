@@ -8,6 +8,7 @@ from starlette.middleware.cors import CORSMiddleware
 from config.settings import settings
 from config.cache import close_redis, get_redis
 from fastapi.responses import JSONResponse
+from util.logger import init_logger
 
 
 async def _real_ip(request: Request) -> str:
@@ -22,6 +23,7 @@ async def _real_ip(request: Request) -> str:
 async def lifespan(fastApi: FastAPI):
     try:
         # Warm Redis
+        init_logger()
         print(f"{Color.GREEN}Initializing...{Color.RESET}")
         redis = await get_redis()
         await FastAPILimiter.init(redis, identifier=_real_ip)

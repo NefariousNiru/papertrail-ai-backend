@@ -5,32 +5,80 @@ from dotenv import load_dotenv
 from pydantic import ValidationError, Field
 from pydantic_settings import BaseSettings
 from util.enums import Environment
+import logging
 
 
 if os.getenv("APP_ENV", Environment.DEV) == Environment.DEV:
     load_dotenv()
 
+_log = logging.getLogger("config.settings")
+
 
 class Settings(BaseSettings):
+    # App
     APP_ENV: str = Field(..., validation_alias="APP_ENV")
-    ALLOWED_ORIGIN: str = Field(..., validation_alias="ALLOWED_ORIGIN")
-    ANTHROPIC_API_URL: str = Field(..., validation_alias="ANTHROPIC_API_URL")
-    ANTHROPIC_MODEL: str = Field(..., validation_alias="ANTHROPIC_MODEL")
     REDIS_URL: str = Field(..., validation_alias="REDIS_URL")
     PERSISTENCE_TTL_SECONDS: str = Field(
         ..., validation_alias="PERSISTENCE_TTL_SECONDS"
     )
+
+    # CORS & Limits
+    ALLOWED_ORIGIN: str = Field(..., validation_alias="ALLOWED_ORIGIN")
     RATE_LIMIT_TIMES: str = Field(..., validation_alias="RATE_LIMIT_TIMES")
     RATE_LIMIT_SECONDS: int = Field(..., validation_alias="RATE_LIMIT_SECONDS")
     MAX_FILE_MB: int = Field(..., validation_alias="MAX_FILE_MB")
     TRUST_PROXY: bool = Field(..., validation_alias="TRUST_PROXY")
+
+    # Anthropic Settings
+    ANTHROPIC_API_URL: str = Field(..., validation_alias="ANTHROPIC_API_URL")
+    ANTHROPIC_MODEL: str = Field(..., validation_alias="ANTHROPIC_MODEL")
+    ANTHROPIC_VERSION: str = Field(..., validation_alias="ANTHROPIC_VERSION")
+
+    # Embedding Engine
+    EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
+    EXTRACT_CONCURRENCY: int = 4
+
+    # Logging knobs
+    LOGGER_NAME: str = "paper-trail-ai"
+    LOG_LEVEL: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+    LOG_TO_FILE: bool = Field(default=False, validation_alias="LOG_TO_FILE")
+    LOG_DIR: str = Field(default="logs", validation_alias="LOG_DIR")
+    LOG_FILE_NAME: str = Field(default="app.log", validation_alias="LOG_FILE_NAME")
+    LOG_MAX_BYTES: int = Field(
+        default=50 * 1024 * 1024, validation_alias="LOG_MAX_BYTES"
+    )
+    LOG_BACKUP_COUNT: int = Field(default=5, validation_alias="LOG_BACKUP_COUNT")
+
+    # Prompts
+    EXTRACT_SYSTEM_PROMPT: str = (
+        "You extract concise factual claims from academic text and research papers.\n"
+        "Output format:\n"
+        "- Return NDJSON: one JSON object per line (no surrounding array).\n"
+        '- Each line must be: {"id":"<unique>","text":"...","status":"cited|weakly_cited|uncited"}\n'
+        "- Emit AT MOST 8 lines per request.\n"
+        "- No extra prose. No code fences.\n"
+        "\n"
+        "Guidelines:\n"
+        "- Extract only checkable factual statements under 280 chars.\n"
+        '- status: "cited" if a citation marker like [12] or (Smith, 2020) appears; "weakly_cited" if ambiguous; else "uncited".\n'
+    )
+
+    VERIFY_SYSTEM_PROMPT: str = (
+        "You are a careful scientific fact-checker. Given a CLAIM and EVIDENCE EXCERPTS from a cited paper, decide if the evidence SUPPORTS the claim, PARTIALLY SUPPORTS it, or is UNSUPPORTED.\n\n"
+        "Rules:\n"
+        "- Judge only based on provided excerpts.\n"
+        "- If evidence is mixed or partial, choose PARTIALLY_SUPPORTED.\n"
+        "- Keep the explanation short (markdown ok).\n"
+        '- Return JSON only: {"verdict": "...", "confidence": 0.0-1.0, "reasoningMd":"..." }.\n'
+        '- verdict ∈ {"supported","partially_supported","unsupported"}.\n'
+        "- No code fences.\n"
+    )
 
 
 try:
     settings = Settings()
 except ValidationError as e:
     print("❌ Missing/invalid environment variables:", file=sys.stderr)
-    # Print each error in a compact way
     for err in e.errors():
         loc = ".".join(str(x) for x in err.get("loc", []))
         msg = err.get("msg", "")
