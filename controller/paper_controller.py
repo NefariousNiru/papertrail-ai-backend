@@ -42,7 +42,7 @@ async def stream_claims(
     payload: StreamClaimsRequest,
     service: PaperService = Depends(get_paper_service),
 ):
-    generator = service.stream_claims(payload.jobId)
+    generator = service.stream_claims(payload.jobId, payload.apiKey)
     return StreamingResponse(generator, media_type="application/x-ndjson")
 
 
@@ -58,4 +58,6 @@ async def verify_claim(
     apiKey: str = Form(...),
     service: PaperService = Depends(get_paper_service),
 ):
-    return await service.verify_claim(claim_id=claimId, file=file, job_id=jobId)
+    return await service.verify_claim(
+        claim_id=claimId, file=file, job_id=jobId, api_key=apiKey
+    )

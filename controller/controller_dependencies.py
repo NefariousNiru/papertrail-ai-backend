@@ -1,4 +1,5 @@
 # controller/controller_dependencies.py
+from repository.blob_repository import BlobRepository
 from repository.claim_buffer_repository import ClaimBufferRepository
 from repository.verification_repository import VerificationRepository
 from service.paper_service import PaperService
@@ -11,7 +12,8 @@ def get_paper_service() -> PaperService:
     _jobs = JobRepository()
     _buffer = ClaimBufferRepository()
     _verifications = VerificationRepository()
-    _service = PaperService(_jobs, _buffer, _verifications)
+    _blobs = BlobRepository()
+    _service = PaperService(_jobs, _buffer, _verifications, _blobs)
     return _service
 
 

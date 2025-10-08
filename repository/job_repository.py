@@ -9,11 +9,10 @@ from model.job import Job, JobStatus
 from repository.namespaces import JOBS
 
 KEY_PREFIX: Final[str] = JOBS
-DEFAULT_TTL_SECONDS: Final[int] = settings.PERSISTENCE_TTL_SECONDS
 
 
 class JobRepository:
-    def __init__(self, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> None:
+    def __init__(self, ttl_seconds: int = settings.PERSISTENCE_TTL_SECONDS) -> None:
         self._ttl = int(ttl_seconds)
 
     @staticmethod
@@ -85,21 +84,32 @@ class JobRepository:
         await r.hset(self._key(job_id), mapping={"status": status})
         await r.expire(self._key(job_id), self._ttl)
 
-    # ---------------- Page-based progress snapshot ----------------
+    async def set_totals(self, job_id: str, *, processed: int, total: int) -> None:
+        r = await self._client()
+        await r.hset(
+            self._key(job_id),
+            mapping={"processed": str(processed), "total": str(total)},
+        )
+        await r.expire(self._key(job_id), self._ttl)
 
-    async def save_parse_progress(
-        self, job_id: str, processed: int, total: int
+    # ---------------- Phase-based progress snapshots ----------------
+    # We keep ONE latest snapshot under generic keys:
+    # phase, progress_processed, progress_total, progress_ts
+    # So whichever phase saves last is what reconnects will replay.
+
+    async def save_phase_progress(
+        self, job_id: str, *, phase: str, processed: int, total: int
     ) -> None:
-        now_epoch = int(time.time())  # seconds since epoch
+        now = int(time.time())
         r = await self._client()
         await r.hset(
             self._key(job_id),
             mapping={
-                "phase": "parse",
+                "phase": phase,
                 "progress_processed": str(processed),
                 "progress_total": str(total),
-                "progress_ts": str(now_epoch),
-                # keep Job fields synced for quick inspection
+                "progress_ts": str(now),
+                # keep quick totals in sync
                 "processed": str(processed),
                 "total": str(total),
             },
@@ -118,14 +128,19 @@ class JobRepository:
                 return None
             return v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
 
-        if _s("phase") != "parse":
+        phase = _s("phase")
+        if not phase:
             return None
 
         try:
             processed = int((_s("progress_processed") or "0"))
             total = int((_s("progress_total") or "0"))
-            ts_raw = _s("progress_ts") or ""
-            ts = int(ts_raw) if ts_raw else int(time.time())
-            return {"phase": "parse", "processed": processed, "total": total, "ts": ts}
+            ts = int((_s("progress_ts") or str(int(time.time()))))
+            return {
+                "phase": phase,
+                "processed": processed,
+                "total": total,
+                "ts": ts,
+            }
         except Exception:
             return None
