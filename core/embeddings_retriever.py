@@ -19,7 +19,7 @@ def _load_model() -> SentenceTransformer:
     Model is kept CPU-friendly; adjust in settings if you want a larger model.
     """
     name = settings.EMBEDDING_MODEL_NAME
-    with timed(logger, "embed.model.load", name=name):
+    with timed(logger, "embed.model.load", model=name):
         model = SentenceTransformer(name, device="cpu")
     return model
 
