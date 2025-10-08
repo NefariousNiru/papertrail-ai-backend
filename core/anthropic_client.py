@@ -28,7 +28,7 @@ def _extract_user(page_number: int, page_text: str) -> str:
     """
     Build the user message for extraction with page-number context.
     """
-    return f"Page {page_number} text:\n{page_text}\n\nReturn up to 8 claim objects as NDJSON lines."
+    return f"Page {page_number} text:\n{page_text}\n\nReturn claim objects as NDJSON lines."
 
 
 def _parse_ndjson(raw: str) -> list[dict]:

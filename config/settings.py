@@ -51,26 +51,47 @@ class Settings(BaseSettings):
 
     # Prompts
     EXTRACT_SYSTEM_PROMPT: str = (
-        "You extract concise factual claims from academic text and research papers.\n"
-        "Output format:\n"
-        "- Return NDJSON: one JSON object per line (no surrounding array).\n"
-        '- Each line must be: {"id":"<unique>","text":"...","status":"cited|weakly_cited|uncited"}\n'
-        "- Emit AT MOST 8 lines per request.\n"
-        "- No extra prose. No code fences.\n"
+        "You extract only high-signal, checkable factual CLAIMS that this paper makes "
+        "ABOUT EXTERNAL WORK (third-party claims). Ignore claims about THIS paper’s own methods, results, or conclusions.\n"
         "\n"
-        "Guidelines:\n"
-        "- Extract only checkable factual statements under 280 chars.\n"
-        '- status: "cited" if a citation marker like [12] or (Smith, 2020) appears; "weakly_cited" if ambiguous; else "uncited".\n'
+        "OUTPUT (NDJSON): One JSON object per line. No arrays. No code fences.\n"
+        'Each line MUST include: {"id":"<unique>","text":"<verbatim sentence>","status":"cited|weakly_cited|uncited"}\n'
+        'Optional when status == "weakly_cited": add "weak_reason":"<short reason why ambiguous>"\n'
+        "\n"
+        "STRICT TEXT RULES:\n"
+        "- The value of \"text\" MUST be a VERBATIM copy of a single sentence from the provided page (original punctuation/case).\n"
+        "- If the sentence contains inline citation marker(s), KEEP THEM in the text exactly as printed (e.g., [12], (Smith, 2020)).\n"
+        "- Do NOT paraphrase, merge sentences, or add commentary to the text.\n"
+        "\n"
+        "WHAT TO EXTRACT:\n"
+        "- Only sentences that attribute facts to third parties (e.g., “As Smith (2019) showed…”, “According to CDC (2021)…”, "
+        "“Prior work demonstrates… [12]”).\n"
+        "- Prefer quality over quantity. Emit claims only when the statement plausibly requires citation "
+        "(non-trivial, not common knowledge in a general sense).\n"
+        "- No hard limit on the number of lines; emit as many as meet the criteria for this page, possibly zero.\n"
+        "\n"
+        "STATUS RULES:\n"
+        '- Use "cited" when the sentence includes an explicit inline citation marker (e.g., [7], (Jones, 2020), superscript refs). '
+        "These markers MUST remain in the verbatim text so the claim appears as \"<sentence> [7]\".\n"
+        '- Use "weakly_cited" when attribution is implied but no explicit marker is present (e.g., “previous studies suggest”, '
+        '“prior work has shown”). In this case, include a short "weak_reason" explaining the ambiguity (e.g., '
+        '"generic phrase without explicit reference", "mentions author without year", etc.).\n'
+        '- Use "uncited" when there is no attribution and the sentence nonetheless reads like a factual claim that would'
+        "benefit from a source.\n"
+        "\n"
+        "GENERAL:\n"
+        "- Do not include claims about this paper itself (methods, experiments, dataset sizes, its own results, or conclusions).\n"
+        "- No extra prose or explanations outside the NDJSON objects.\n"
     )
 
     VERIFY_SYSTEM_PROMPT: str = (
-        "You are a careful scientific fact-checker. Given a CLAIM and EVIDENCE EXCERPTS from a cited paper, decide if the evidence SUPPORTS the claim, PARTIALLY SUPPORTS it, or is UNSUPPORTED.\n\n"
+        "You are a careful scientific fact-checker. Given a CLAIM and EVIDENCE EXCERPTS from the cited paper, decide if the evidence "
+        "SUPPORTS the claim, PARTIALLY SUPPORTS it, or is UNSUPPORTED.\n\n"
         "Rules:\n"
-        "- Judge only based on provided excerpts.\n"
-        "- If evidence is mixed or partial, choose PARTIALLY_SUPPORTED.\n"
-        "- Keep the explanation short (markdown ok).\n"
-        '- Return JSON only: {"verdict": "...", "confidence": 0.0-1.0, "reasoningMd":"..." }.\n'
-        '- verdict ∈ {"supported","partially_supported","unsupported"}.\n'
+        "- Judge ONLY from the provided excerpts; do not assume context outside them.\n"
+        "- If evidence is mixed, tangential, or insufficient, choose PARTIALLY_SUPPORTED (not supported).\n"
+        "- Keep the explanation short (markdown is okay).\n"
+        '- Return JSON ONLY: {"verdict":"supported|partially_supported|unsupported","confidence":0.0-1.0,"reasoningMd":"..."}\n'
         "- No code fences.\n"
     )
 
