@@ -1,47 +1,29 @@
-# syntax=docker/dockerfile:1
-
-# ---- Base builder ----
-FROM python:3.12-slim AS builder
-
-# Set working dir
+# ---------- Builder: export requirements from Poetry ----------
+FROM python:3.12-slim AS build
 WORKDIR /app
+RUN pip install --no-cache-dir poetry==1.8.3
+COPY pyproject.toml poetry.lock* ./
+RUN poetry export -f requirements.txt --without-hashes -o requirements.txt
 
-# System deps for PyMuPDF + build tools
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ libglib2.0-0 libxrender1 libxext6 libsm6 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy Poetry setup first (for caching)
-COPY pyproject.toml poetry.lock* poetry.toml* ./
-
-# Install Poetry (no virtualenv inside container)
-RUN pip install --no-cache-dir poetry \
- && poetry config virtualenvs.create false \
- && poetry install --only main --no-root --no-interaction --no-ansi
-
-# ---- Runtime image ----
+# ---------- Runtime image ----------
 FROM python:3.12-slim
-
 WORKDIR /app
 
-# Copy runtime system libs (same as builder)
+# Minimal runtime libs needed by PyMuPDF on slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libxrender1 libxext6 libsm6 \
-    && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/*
 
-# Copy installed site-packages from builder
-COPY --from=builder /usr/local /usr/local
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    APP_ENV=prod
 
-# Copy the source code
+COPY --from=build /app/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# App code
 COPY . .
 
-# Environment defaults (can be overridden)
-ENV APP_ENV=prod \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
-
-# Expose port for FastAPI
-EXPOSE 8080
-
-# Start the app
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# Railway sets $PORT; fallback to 8000 for local
+EXPOSE 8000
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips '*'"]
