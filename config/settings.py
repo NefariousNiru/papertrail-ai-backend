@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     MAX_FILE_MB: int = Field(..., validation_alias="MAX_FILE_MB")
     TRUST_PROXY: bool = Field(..., validation_alias="TRUST_PROXY")
 
+    # External URLS:
+    SEMANTIC_SEARCH_URL: str = "https://api.semanticscholar.org/graph/v1/paper/search"
+
     # Anthropic Settings
     ANTHROPIC_API_URL: str = Field(..., validation_alias="ANTHROPIC_API_URL")
     ANTHROPIC_MODEL: str = Field(..., validation_alias="ANTHROPIC_MODEL")
@@ -59,7 +62,7 @@ class Settings(BaseSettings):
         'Optional when status == "weakly_cited": add "weak_reason":"<short reason why ambiguous>"\n'
         "\n"
         "STRICT TEXT RULES:\n"
-        "- The value of \"text\" MUST be a VERBATIM copy of a single sentence from the provided page (original punctuation/case).\n"
+        '- The value of "text" MUST be a VERBATIM copy of a single sentence from the provided page (original punctuation/case).\n'
         "- If the sentence contains inline citation marker(s), KEEP THEM in the text exactly as printed (e.g., [12], (Smith, 2020)).\n"
         "- Do NOT paraphrase, merge sentences, or add commentary to the text.\n"
         "\n"
@@ -72,7 +75,7 @@ class Settings(BaseSettings):
         "\n"
         "STATUS RULES:\n"
         '- Use "cited" when the sentence includes an explicit inline citation marker (e.g., [7], (Jones, 2020), superscript refs). '
-        "These markers MUST remain in the verbatim text so the claim appears as \"<sentence> [7]\".\n"
+        'These markers MUST remain in the verbatim text so the claim appears as "<sentence> [7]".\n'
         '- Use "weakly_cited" when attribution is implied but no explicit marker is present (e.g., “previous studies suggest”, '
         '“prior work has shown”). In this case, include a short "weak_reason" explaining the ambiguity (e.g., '
         '"generic phrase without explicit reference", "mentions author without year", etc.).\n'
