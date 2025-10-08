@@ -1,215 +1,323 @@
-# 🧰 Backend – README.md
+# 🧰 PaperTrail AI — FastAPI Backend
 
-## PaperTrail AI — FastAPI Backend
+## Overview
 
-### What problem does this solve?
+Academic writing is filled with factual claims that are **uncited**, **weakly cited**, or **improperly supported**.
+Verifying these manually is slow, subjective, and error-prone.
 
-Academic writing is full of factual claims that may be **uncited**, **weakly cited**, or improperly supported. Manual verification is slow and error-prone. PaperTrail AI verifies whether claims in a paper are supported by the cited sources—**semantically**, not just by keyword matching.
+**PaperTrail AI** automates that process. It extracts factual claims from academic papers, classifies them by citation strength, and verifies whether those claims are supported by the cited sources using **semantic similarity** and **LLM-based reasoning**.
 
-### Goals
-
-* Extract factual claims from a paper and classify them (cited / uncited / weakly cited).
-* Verify claims against their cited sources using semantic retrieval + LLM reasoning.
-* Provide **live, streaming** feedback to the UI.
-* Keep the system private and lightweight: **no long-term storage**, no auth.
-* Persist only what’s needed for a great UX (short-lived): **2h TTL in Redis**.
+This backend is designed to be **private, stateless, and streaming-first** — enabling real-time feedback without storing user data or documents beyond a short runtime window.
 
 ---
 
-## High-level architecture
+## 🎯 Core Objectives
+
+* Extract verifiable factual claims from uploaded research papers.
+* Detect and label citations as `cited`, `weakly_cited`, or `uncited`.
+* Verify each claim against uploaded cited PDFs using **dense embeddings + LLM judgment**.
+* Provide **live, streaming NDJSON** output for a responsive frontend.
+* Maintain complete privacy — no accounts, no permanent storage, no key retention.
+
+---
+
+## ⚙️ System Architecture
 
 ```
-FastAPI (ASGI)
-  ├─ Redis (2h TTL) for ephemeral state
-  │   ├─ JobRepository            # job metadata, TTL refresh while active
-  │   ├─ ClaimBufferRepository    # append-only list of streamed claims per job
-  │   └─ VerificationRepository   # per-(jobId, claimId) verification result (verdict, confidence, reasoning, evidence[])
-  ├─ (Planned) PyMuPDF            # page-aware text extraction
-  ├─ (Planned) FAISS (in-memory)  # per-paper semantic search indices
-  ├─ (Planned) Semantic Scholar   # suggestions for uncited claims
-  └─ Anthropic Claude (validate; later: verify prompts)
+                       ┌────────────────────────┐
+                       │     Frontend (React)   │
+                       │  Uploads PDFs & streams│
+                       │   results over NDJSON  │
+                       └────────────┬───────────┘
+                                    │
+                                    ▼
+                        ┌──────────────────────┐
+                        │   FastAPI Backend    │
+                        │  (ASGI + Uvicorn)    │
+                        ├──────────────────────┤
+                        │ Controller Layer     │
+                        │  - paper_controller  │
+                        │  - validation_ctrl   │
+                        │----------------------│
+                        │ Service Layer        │
+                        │  - PaperService      │
+                        │  - ApiKeyValidation  │
+                        │----------------------│
+                        │ Core Modules         │
+                        │  - pdf_text          │
+                        │  - streaming         │
+                        │  - verification_pipe │
+                        │  - embeddings_retrv  │
+                        │----------------------│
+                        │ Repository Layer     │
+                        │  - jobs / claims /   │
+                        │    verifications /   │
+                        │    blobs (Redis)     │
+                        └─────────┬────────────┘
+                                  │
+                      ┌───────────┴────────────┐
+                      │        Redis 7+        │
+                      │  Ephemeral runtime DB  │
+                      │  (Job, Claim, Verify)  │
+                      └───────────┬────────────┘
+                                  │
+                                  ▼
+                   ┌────────────────────────────┐
+                   │   External LLM Provider    │
+                   │  (Anthropic Claude 3.5)    │
+                   │  Extraction + Verification │
+                   └────────────────────────────┘
 ```
 
-**Design choices**
+---
 
-* **Ephemeral by default**: No accounts, no durable DB. Jobs live in Redis for 2 hours.
-* **Privacy**: API keys are never stored. Request bodies are not logged.
-* **Resilience**: If the user refreshes the page, previously streamed claims are **replayed** from Redis, and verified claims are **merged** with their saved verdict/evidence.
+## 🧩 Design Principles
+
+| Principle                   | Description                                                                                    |
+| --------------------------- | ---------------------------------------------------------------------------------------------- |
+| **Ephemeral runtime state** | All jobs, claims, and verifications are stored only for the configured TTL (runtime variable). |
+| **Streaming-first**         | Results are streamed via NDJSON for immediate UI feedback.                                     |
+| **Replay-safe design**      | Reconnection or refresh replays prior claims and verdicts seamlessly.                          |
+| **Privacy by design**       | No persistent storage, no account system, no API key retention.                                |
+| **Observability**           | Structured logs with module and line context; sanitized of sensitive data.                     |
+| **LLM modularity**          | Embedding model and verifier can be replaced without refactoring.                              |
 
 ---
 
-## What’s implemented (MVP core)
+## ✅ Implemented Components
 
-* ✅ **FastAPI project skeleton** with CORS and graceful lifespan.
-* ✅ **Redis integration** (`config/cache.py`) with warm-up on startup and clean shutdown.
-* ✅ **JobRepository** (2h TTL) to hold basic job metadata (`id`, `status`, etc.).
-* ✅ **ClaimBufferRepository** to store already-emitted claims for **replay after refresh**.
-* ✅ **VerificationRepository** to **persist verification results** (verdict, confidence, reasoning, evidence[]) for 2 hours.
-* ✅ **NDJSON streaming**: `/api/v1/stream-claim` streams claim events + progress.
-* ✅ **Verification persistence**: `/api/v1/verify-claim` saves results; replay merges them.
-* ✅ **Evidence support**: Evidence items carry (paperTitle, page, section, paragraph, excerpt) with a **hard cap of 100 words** per excerpt.
+### Core
 
-> Current verification is a demo stub. The data path is wired; next we’ll plug in FAISS + real prompts.
+* **FastAPI ASGI app** with structured routing and graceful lifespan handling.
+* **Async Redis integration** (`config/cache.py`) with automatic connection pooling.
+* **Repository pattern** for clean separation of job, claim, and verification logic.
+* **PyMuPDF-based text extraction** (page-aware, low-memory).
+* **Sentence-Transformers** embeddings for semantic verification.
+* **Anthropic Claude** LLMs for both claim extraction and verification passes.
+* **NDJSON streaming** of live claim extraction results.
+* **Verification persistence** with replay merging (user refresh-safe).
 
----
+### Services
 
-## Endpoints (current)
+* `PaperService`: orchestrates extraction, buffering, verification, and replay.
+* `ApiKeyValidationService`: pings Anthropic to verify the provided key.
 
-Base: `/api/v1`
+### Utilities
 
-| Method | Path                | Purpose                                             |
-| -----: | ------------------- | --------------------------------------------------- |
-|   POST | `/validate-api-key` | Pass-through validator (Anthropic ping)             |
-|   POST | `/upload-paper`     | Accept a paper file, create `jobId`                 |
-|   POST | `/stream-claim`     | **NDJSON** stream of claims+progress                |
-|   POST | `/verify-claim`     | Upload cited PDF, return & persist verdict/evidence |
-
-### Request/Response shapes (selected)
-
-**POST `/upload-paper` (multipart)**
-
-* Form fields: `file: File`, `apiKey: string`
-* Response: `{ "jobId": "<uuid>" }`
-
-**POST `/stream-claim` (JSON)**
-
-* Body: `{ "jobId": "<uuid>", "apiKey": "<string>" }`
-* Response: NDJSON lines, e.g.:
-
-  ```json
-  {"type":"claim","payload":{ "id":"c1", "text":"...", "status":"cited", "verdict":"supported" | null, "confidence":0.82 | null, "reasoningMd":"...", "evidence":[{ "paperTitle":"...", "page":3, "section":"Results", "paragraph":2, "excerpt":"(<=100 words)" }] }}
-  {"type":"progress","payload":{"processed":5,"total":12}}
-  {"type":"done"}
-  ```
-
-**POST `/verify-claim` (multipart)**
-
-* Form fields: `jobId: string`, `claimId: string`, `file: File`, `apiKey: string`
-* Response:
-
-  ```json
-  {
-    "claimId":"c1",
-    "verdict":"supported" | "partially_supported" | "unsupported",
-    "confidence":0.82,
-    "reasoningMd":"short explanation",
-    "evidence":[{ "paperTitle":"...", "page":3, "section":"Results", "paragraph":2, "excerpt":"(<=100 words)" }]
-  }
-  ```
-* Side effect: The response is **persisted** in Redis for 2 hours; subsequent streams or refreshes reflect the verified state.
+* `util.logger`: structured, colored logging with module origin and timestamp.
+* `util.errors`: unified exception handling (AppError class).
+* `util.timing`: lightweight timing context manager for profiling.
 
 ---
 
-## Data lifecycle & persistence
+## 🧠 Data Model & Lifecycle
 
-* **Job**: `papertrail:jobs:{jobId}` — refreshed while streaming; auto-expires after 2h idle.
-* **Claim buffer**: `papertrail:claims:{jobId}` — list of emitted claims so refresh can replay.
-* **Verifications**: `papertrail:verifications:{jobId}:{claimId}` — persisted verdict/evidence to merge on replay.
+| Key                                          | Description                                   | TTL                                        |
+| -------------------------------------------- | --------------------------------------------- | ------------------------------------------ |
+| `papertrail:jobs:{jobId}`                    | Metadata & progress snapshot for each job     | Configurable via `PERSISTENCE_TTL_SECONDS` |
+| `papertrail:claims:{jobId}`                  | Ordered buffer of emitted claims (for replay) | Configurable                               |
+| `papertrail:verifications:{jobId}:{claimId}` | Persisted verdict and evidence                | Configurable                               |
 
-> **Skip** is intentional **front-end only** (ephemeral). We do not persist user choices.
+* Each Redis key auto-expires after the runtime-configured TTL.
+* TTL is refreshed during active streaming or verification to extend session life.
+* When clients reconnect, prior data are **replayed automatically** to restore state.
 
 ---
 
-## Local setup
+## 🚀 API Endpoints
 
-**Prereqs**
+**Base:** `/api/v1`
+
+| Method | Path                | Description                                   |
+| :----: | :------------------ | :-------------------------------------------- |
+| `POST` | `/validate-api-key` | Validate Anthropic key                        |
+| `POST` | `/upload-paper`     | Upload a research paper and start a job       |
+| `POST` | `/stream-claim`     | Stream extracted claims and progress (NDJSON) |
+| `POST` | `/verify-claim`     | Verify one claim against its cited source     |
+
+---
+
+### Example Flows
+
+#### 1. Upload Paper
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/upload-paper \
+  -F "file=@paper.pdf" \
+  -F "apiKey=<anthropic-key>"
+```
+
+Response:
+
+```json
+{ "jobId": "9e21b9c3-7de4-4a09-8151-d772bd3c8f20" }
+```
+
+#### 2. Stream Claims
+
+```bash
+curl -N -H "Content-Type: application/json" \
+  -X POST http://127.0.0.1:8000/api/v1/stream-claim \
+  -d '{"jobId":"9e21b9c3-7de4-4a09-8151-d772bd3c8f20","apiKey":"<key>"}'
+```
+
+NDJSON stream:
+
+```json
+{"type":"progress","payload":{"phase":"extract","processed":3,"total":10}}
+{"type":"claim","payload":{"id":"c1","text":"As noted by Zhao et al. (2020), transformer layers improve contextual encoding.","status":"cited"}}
+{"type":"claim","payload":{"id":"c2","text":"Previous work suggests similar improvements without attention layers.","status":"weakly_cited","weak_reason":"mentions prior work without explicit reference"}}
+{"type":"done"}
+```
+
+#### 3. Verify Claim
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/verify-claim \
+  -F "jobId=9e21b9c3-7de4-4a09-8151-d772bd3c8f20" \
+  -F "claimId=c1" \
+  -F "file=@cited_source.pdf" \
+  -F "apiKey=<anthropic-key>"
+```
+
+Response:
+
+```json
+{
+  "claimId": "c1",
+  "verdict": "supported",
+  "confidence": 0.91,
+  "reasoningMd": "The cited paper explicitly demonstrates transformer-based improvements under comparable conditions.",
+  "evidence": [
+    {
+      "paperTitle": "Attention is All You Need",
+      "page": 3,
+      "section": "Experiments",
+      "paragraph": 2,
+      "excerpt": "Transformers outperform RNNs on language modeling tasks..."
+    }
+  ]
+}
+```
+
+---
+
+## 🧾 Implementation Notes
+
+* **Idempotent streaming**: multiple `/stream-claim` calls replay the same data safely.
+* **Merge logic**: verified claims update existing entries without duplication.
+* **Error handling**: all raised `AppError` objects map to clear HTTP responses.
+* **Concurrency**: PDF parsing, LLM calls, and Redis operations run fully asynchronously.
+* **Configurable runtime TTL**: controlled via `PERSISTENCE_TTL_SECONDS` env var.
+* **Strict logging discipline**:
+
+  * No API keys or content logged.
+  * Each log includes `timestamp`, `level`, `file:line`, and message.
+
+---
+
+## 🔧 Local Setup
+
+### Prerequisites
 
 * Python 3.12+
-* Redis 7+ (Docker is fine)
+* Redis 7+
+* Poetry
 
-**Install & run API**
+### Run locally
 
 ```bash
 poetry install
 poetry run uvicorn main:app --reload --port 8000
 ```
 
-**Key environment/config**
-* `APP_ENV` (default: `dev`)
-* `REDIS_URL` (default: `redis://127.0.0.1:6379/0`)
-* `ALLOWED_ORIGIN` (e.g., `http://localhost:5173`)
-* `ANTHROPIC_MODEL` (e.g., `claude-3-5-sonnet-latest`)
-* `ANTHROPIC_API_URL` (`https://api.anthropic.com/v1/messages`)
-* `PERSISTENCE_TTL_SECONDS` (`7200` seconds)
+### Key Environment Variables
+
+| Variable                  | Default                                 | Description                              |
+| ------------------------- | --------------------------------------- | ---------------------------------------- |
+| `APP_ENV`                 | `dev`                                   | Environment flag                         |
+| `REDIS_URL`               | `redis://127.0.0.1:6379/0`              | Redis connection                         |
+| `ALLOWED_ORIGIN`          | `http://localhost:5173`                 | CORS frontend origin                     |
+| `ANTHROPIC_MODEL`         | `claude-3-5-sonnet-latest`              | Model used for extraction + verification |
+| `ANTHROPIC_API_URL`       | `https://api.anthropic.com/v1/messages` | Anthropic endpoint                       |
+| `PERSISTENCE_TTL_SECONDS` | `7200`                                  | Time-to-live for ephemeral runtime data  |
+
 ---
 
-## Testing quickly
+## 🧰 Coding Standards
 
-**Health**
+* **PEP8 + Black** formatting
+* **Type-annotated** throughout
+* **Repository-Service separation** for clean layering
+* **Single-responsibility modules** (`core/`, `service/`, `repository/`)
+* **Structured JSON logs** with module-level `_log` instances
+* **Graceful startup/shutdown** via FastAPI lifespan events
+* **Strict NDJSON compliance** for streaming endpoints
 
+---
+
+## 🔐 Security & Privacy
+
+* No persistent storage (TTL-controlled runtime only)
+* No user accounts or authentication
+* No API key or PDF content persisted or logged
+* Logs sanitized before emission
+* Future hardening:
+
+  * File size/page limit enforcement
+  * Per-IP rate limiting via Redis counters
+
+---
+
+## 🧱 Deployment
+
+### Docker Example
+
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+
+COPY pyproject.toml poetry.lock* ./
+RUN pip install --no-cache-dir poetry==1.8.3 \
+  && poetry export -f requirements.txt --without-hashes -o requirements.txt \
+  && pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+EXPOSE 8080
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers"]
 ```
-GET /healthz → { "ok": true }
-```
 
-**Validate key**
+### Deployment Notes
 
-```
-POST /api/v1/validate-api-key
-{ "apiKey": "..." }
-```
+* Works on **Railway**, **Fly.io**, **Render**, or any Docker-compatible host.
+* Attach a managed Redis instance.
+* Supply environment variables (including Anthropic API key) via deployment settings.
+* The Redis TTL determines data persistence window automatically.
 
-**Upload paper (Postman form-data)**
+---
 
-* `file: <choose a PDF>`
-* `apiKey: <your key>`
-  → `201 { "jobId": "<uuid>" }`
-
-**Stream (curl for live view)**
+## 🧩 Testing & Verification
 
 ```bash
-curl -N -H "Content-Type: application/json" \
-  -X POST http://127.0.0.1:8000/api/v1/stream-claim \
-  -d '{"jobId":"<uuid>","apiKey":"<key>"}'
+# Run local API
+poetry run uvicorn main:app --reload
+
+# Health check
+curl http://127.0.0.1:8000/healthz
+
+# Quick verification
+pytest tests/
 ```
 
-**Verify claim (Postman form-data)**
+*Integration tests validate:*
 
-* `jobId: <uuid>`
-* `claimId: c1`
-* `file: <cited source PDF>`
-* `apiKey: <your key>`
-
----
-
-## Security & privacy
-
-* **No user accounts; no long-term storage.**
-* API keys never saved; pass only in request body; not logged.
-* Claims and verification data expire automatically after 2 hours.
-* Request/response payloads are sanitized; consider adding PDF scanning in a later hardening pass.
+* NDJSON parsing
+* Redis persistence
+* LLM response schema
+* Claim replay after refresh
 
 ---
 
-## What’s next (backend)
+## 🧾 License
 
-**P1 (immediate)**
-
-1. **Rate limiting + file size/page limits**
-
-   * Per-IP counters via Redis; friendly 429 with `Retry-After`.
-   * Enforce max file size/pages and fail fast with 413/422.
-
-2. **Page-based progress**
-
-   * Emit `phase:"parse"` with `processed/total` pages, then extraction totals.
-   * Store latest progress snapshot with the job; replay it on reconnect before claims.
-
-3. **Semantic Scholar integration**
-
-   * `/api/v1/suggest-citations` → proxy + cache (Redis TTL 10–30 min); top 3 normalized results.
-
-4. **Core AI pipeline**
-
-   * PyMuPDF text extraction (page-aware), sentence segmentation.
-   * Claim detection + citation marker extraction (LLM pass).
-   * Per-source: chunk → embed → FAISS (in-memory) → top-k → Claude prompt → verdict + evidence (100-word cap).
-
-5. **Central logging**
-
-   * Structured JSON logs to console + file; include route, jobId, duration, sanitized errors.
-   * Strictly avoid logging API keys and document content.
-
-**P2 (soon after)**
-
-* Background job runner (processing continues even if client disconnects).
-* Multi-replica readiness (sticky sessions by `jobId` or simple job routing).
+**MIT License © 2025 NefariousNiru**
