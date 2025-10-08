@@ -14,13 +14,6 @@ from util import functions
 
 
 class PaperService:
-    """
-    Flow:
-    - On upload: create job id; clear stale buffers; persist original PDF (TTL=2h).
-    - On stream: replay buffered claims + latest snapshot; then run (or resume) concurrent extraction.
-    - On verify: build local embeddings index from cited PDF, retrieve & verify via Claude; persist result.
-    """
-
     def __init__(
         self,
         jobs: JobRepository,
@@ -43,10 +36,12 @@ class PaperService:
 
     async def stream_claims(self, job_id: str, api_key: str):
         """
-        Reconnect-friendly stream:
-          1) Emit latest snapshot (parse or extract) if present.
-          2) Replay buffered claims with saved verification overlays.
-          3) Continue extraction for remaining pages (skip already-buffered claim IDs). No early return.
+        Replay-first strategy with status-aware behavior:
+          - If job is FINISHED: emit final snapshot (if any) + replay claims, then DONE (no re-extract).
+          - If job is IN-PROGRESS:
+              * emit latest snapshot once (parse OR extract)
+              * replay any buffered claims (overlay verification)
+              * continue live extraction, skipping buffered ids
         """
         job = await self._jobs.get(job_id)
         if job is None:
@@ -58,24 +53,37 @@ class PaperService:
             yield ndjson_line(StreamEvent(type="done", payload={}).model_dump())
             return
 
-        # 0) emit latest phase snapshot (parse OR extract), if any
+        # Read current status & latest snapshot (parse or extract)
+        status = await self._jobs.get_status(job_id) or job.status
         snap = await self._jobs.get_progress_snapshot(job_id)
+
+        # Emit the latest snapshot (if any) so UI shows correct phase/progress immediately
         if snap and snap.get("total", 0) > 0:
             payload = ProgressPayload.model_validate(snap)
             yield ndjson_line(
                 StreamEvent(type="progress", payload=payload.model_dump()).model_dump()
             )
 
-        # 1) replay buffered claims (overlay verification)
+        # Pull any buffered claims
         buffered = await self._buffer.all(job_id)
-        for c in buffered:
-            merged = c.model_dump(exclude_none=True)
-            saved = await self._verifications.get(job_id, c.id)
-            if saved:
-                functions.stream_merge_saved(merged=merged, saved=saved)
-            yield ndjson_line(StreamEvent(type="claim", payload=merged).model_dump())
+        if buffered:
+            # Replay buffered claims with verification overlay
+            for c in buffered:
+                await self._buffer.touch(job_id)
+                merged = c.model_dump(exclude_none=True)
+                saved = await self._verifications.get(job_id, c.id)
+                if saved:
+                    functions.stream_merge_saved(merged=merged, saved=saved)
+                yield ndjson_line(
+                    StreamEvent(type="claim", payload=merged).model_dump()
+                )
 
-        # 2) continue (or start) extraction
+        # If job has already finished, never re-run extraction.
+        if (status or "").lower() == "finished":
+            yield ndjson_line(StreamEvent(type="done", payload={}).model_dump())
+            return
+
+        # Otherwise, continue live extraction FROM HERE.
         pdf = await self._blobs.get_pdf(job_id)
         if not pdf:
             yield ndjson_line(StreamEvent(type="done", payload={}).model_dump())
@@ -86,14 +94,9 @@ class PaperService:
             yield ndjson_line(StreamEvent(type="done", payload={}).model_dump())
             return
 
-        # Skip already-buffered claim ids to avoid duplicates on reconnect
+        # Skip ids we already replayed; suppress parse phase if snapshot says we're already extracting
         skip_ids = {c.id for c in buffered} if buffered else set()
-
-        # If the last snapshot says we're already in extract, don't re-emit parse
         emit_parse = not (snap and snap.get("phase") == "extract")
-        extract_start_processed = (
-            int(snap["processed"]) if (snap and snap.get("phase") == "extract") else 0
-        )
 
         async for chunk in make_live_stream(
             job_id=job_id,
@@ -107,7 +110,6 @@ class PaperService:
             extract_concurrency=settings.EXTRACT_CONCURRENCY,
             skip_ids=skip_ids,
             emit_parse=emit_parse,
-            extract_start_processed=extract_start_processed,
         ):
             yield chunk
 

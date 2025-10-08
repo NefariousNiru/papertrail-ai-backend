@@ -5,6 +5,7 @@ from uuid import uuid4
 from redis.asyncio import Redis
 from config.cache import get_redis
 from config.settings import settings
+from model.api import ProgressPhase
 from model.job import Job, JobStatus
 from repository.namespaces import JOBS
 
@@ -77,12 +78,21 @@ class JobRepository:
         r = await self._client()
         return int(await r.delete(self._key(job_id)))
 
-    # ---------------- Convenience updates ----------------
+    # ---------------- Status helpers ----------------
 
     async def set_status(self, job_id: str, status: JobStatus) -> None:
         r = await self._client()
         await r.hset(self._key(job_id), mapping={"status": status})
         await r.expire(self._key(job_id), self._ttl)
+
+    async def get_status(self, job_id: str) -> Optional[JobStatus]:
+        r = await self._client()
+        v = await r.hget(self._key(job_id), "status")
+        if v is None:
+            return None
+        if isinstance(v, (bytes, bytearray)):
+            v = v.decode("utf-8")
+        return v or None
 
     async def set_totals(self, job_id: str, *, processed: int, total: int) -> None:
         r = await self._client()
@@ -92,14 +102,15 @@ class JobRepository:
         )
         await r.expire(self._key(job_id), self._ttl)
 
-    # ---------------- Phase-based progress snapshots ----------------
-    # We keep ONE latest snapshot under generic keys:
-    # phase, progress_processed, progress_total, progress_ts
-    # So whichever phase saves last is what reconnects will replay.
+    # ---------------- Phase-based progress snapshots (parse/extract) ----------------
 
     async def save_phase_progress(
-        self, job_id: str, *, phase: str, processed: int, total: int
+        self, job_id: str, *, phase: ProgressPhase, processed: int, total: int
     ) -> None:
+        """
+        Persist snapshot for any phase; also mirror processed/total for quick inspection.
+        Newer snapshots overwrite older ones (we keep only the latest).
+        """
         now = int(time.time())
         r = await self._client()
         await r.hset(
@@ -109,7 +120,6 @@ class JobRepository:
                 "progress_processed": str(processed),
                 "progress_total": str(total),
                 "progress_ts": str(now),
-                # keep quick totals in sync
                 "processed": str(processed),
                 "total": str(total),
             },
@@ -117,6 +127,9 @@ class JobRepository:
         await r.expire(self._key(job_id), self._ttl)
 
     async def get_progress_snapshot(self, job_id: str) -> dict | None:
+        """
+        Return the latest saved snapshot (parse OR extract), or None.
+        """
         r = await self._client()
         h = await r.hgetall(self._key(job_id))
         if not h:
@@ -135,12 +148,7 @@ class JobRepository:
         try:
             processed = int((_s("progress_processed") or "0"))
             total = int((_s("progress_total") or "0"))
-            ts = int((_s("progress_ts") or str(int(time.time()))))
-            return {
-                "phase": phase,
-                "processed": processed,
-                "total": total,
-                "ts": ts,
-            }
+            ts = int(_s("progress_ts") or str(int(time.time())))
+            return {"phase": phase, "processed": processed, "total": total, "ts": ts}
         except Exception:
             return None
