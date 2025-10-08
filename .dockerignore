@@ -1,0 +1,48 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.dist-info/
+
+# Build artifacts
+build/
+dist/
+.eggs/
+.mypy_cache/
+pytest_cache/
+.coverage
+.pytest_cache/
+
+# Poetry virtualenvs (local)
+.venv/
+env/
+venv/
+
+# Logs and temp files
+logs/
+*.log
+*.tmp
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Git and docs
+.git/
+.gitignore
+README.md
+
+# Cache / dataset folders (if any)
+data/
+uploads/
+cache/
+
+# Don’t include Docker build files themselves
+Dockerfile
+docker-compose.yml
