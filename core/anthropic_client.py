@@ -3,6 +3,10 @@ import json
 from typing import Dict, Any
 import httpx
 from config.settings import settings
+import logging
+from util.timing import timed
+
+logger = logging.getLogger(__name__)
 
 
 async def _post_json(
@@ -76,7 +80,9 @@ async def extract_claims_from_page(
         ],
         "temperature": 0.0,
     }
-    data = await _post_json(api_url, headers, payload, timeout=timeout)
+    with timed(logger, "ai.extract", page=page_number, model=model):
+        data = await _post_json(api_url, headers, payload, timeout=timeout)
+
     text = ""
     try:
         content = data.get("content") or []
@@ -97,4 +103,5 @@ async def extract_claims_from_page(
                 "status": c.get("status") or "uncited",
             }
         )
+    logger.info("ai.extract.claims page=%d count=%d", page_number, len(ready))
     return ready

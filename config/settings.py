@@ -5,10 +5,13 @@ from dotenv import load_dotenv
 from pydantic import ValidationError, Field
 from pydantic_settings import BaseSettings
 from util.enums import Environment
+import logging
 
 
 if os.getenv("APP_ENV", Environment.DEV) == Environment.DEV:
     load_dotenv()
+
+_log = logging.getLogger("config.settings")
 
 
 class Settings(BaseSettings):
@@ -34,6 +37,17 @@ class Settings(BaseSettings):
     # Embedding Engine
     EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
     EXTRACT_CONCURRENCY: int = 4
+
+    # Logging knobs
+    LOGGER_NAME: str = "paper-trail-ai"
+    LOG_LEVEL: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+    LOG_TO_FILE: bool = Field(default=False, validation_alias="LOG_TO_FILE")
+    LOG_DIR: str = Field(default="logs", validation_alias="LOG_DIR")
+    LOG_FILE_NAME: str = Field(default="app.log", validation_alias="LOG_FILE_NAME")
+    LOG_MAX_BYTES: int = Field(
+        default=50 * 1024 * 1024, validation_alias="LOG_MAX_BYTES"
+    )
+    LOG_BACKUP_COUNT: int = Field(default=5, validation_alias="LOG_BACKUP_COUNT")
 
     # Prompts
     EXTRACT_SYSTEM_PROMPT: str = (

@@ -6,6 +6,10 @@ from core.llm_verifier import VerifyResult, anthropic_verify
 from core.pdf_text import extract_pdf_chunks
 from core.entities import PdfChunk
 from util import functions
+import logging
+from util.timing import timed
+
+logger = logging.getLogger(__name__)
 
 
 def _pack_for_prompt(chunks: Sequence[PdfChunk]) -> List[str]:
@@ -53,24 +57,28 @@ async def verify_claim_against_pdf(
     Returns (VerifyResult, evidence_items_for_api).
     """
     # 1) parse
-    chunks = extract_pdf_chunks(source_pdf_bytes, max_chars_per_chunk=1400) or []
-    texts = [c.text for c in chunks] or [""]
+    with timed(logger, "verify.pipeline"):
+        with timed(logger, "verify.parse"):
+            chunks = (
+                extract_pdf_chunks(source_pdf_bytes, max_chars_per_chunk=1400) or []
+            )
+        texts = [c.text for c in chunks] or [""]
 
-    # 2) embed locally
-    index = build_index(texts)
+        with timed(logger, "verify.embed", n=len(texts)):
+            index = build_index(texts)
 
-    # 3) retrieve
-    hits = top_k(index, query=claim_text, k=min(k, len(texts)))
-    top = [chunks[i] for i, _ in hits] if chunks else []
+        with timed(logger, "verify.retrieve", k=min(k, len(texts))):
+            hits = top_k(index, query=claim_text, k=min(k, len(texts)))
+            top = [chunks[i] for i, _ in hits] if chunks else []
+        logger.info("verify.retrieve.top count=%d", len(top))
 
-    # 4) verify with Claude
-    packed = _pack_for_prompt(top)
-    v = await anthropic_verify(
-        api_key=api_key,
-        model=settings.ANTHROPIC_MODEL,
-        claim=claim_text,
-        packed_evidence=packed,
-        api_url=settings.ANTHROPIC_API_URL,
-    )
+        packed = _pack_for_prompt(top)
+        v = await anthropic_verify(
+            api_key=api_key,
+            model=settings.ANTHROPIC_MODEL,
+            claim=claim_text,
+            packed_evidence=packed,
+            api_url=settings.ANTHROPIC_API_URL,
+        )
 
     return v, _evidence_for_api(top)
